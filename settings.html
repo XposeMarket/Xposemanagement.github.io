@@ -1,0 +1,63 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Settings</title><link rel="stylesheet" href="styles.css"></head><body>
+<header class="top">
+  <div class="container row top row">
+    <a class="brand" href="dashboard.html" aria-label="Xpose Management Home">
+      <img src="assets/logo.svg" alt="Xpose Management logo">
+      <b>Xpose Management</b>
+    </a>
+    <nav>
+      <a href="dashboard.html" class="">Dashboard</a>
+      <a href="appointments.html" class="">Appointments</a>
+      <a href="jobs.html" class="">Jobs</a>
+      <a href="messages.html" class="">Messages</a>
+      <a href="invoices.html" class="">Invoices</a>
+      <a href="settings.html" class="active">Settings</a>
+      <a href="profile.html" class="">Profile</a>
+    </nav>
+    <div>
+      <button id="themeToggle" class="btn" aria-label="Toggle theme">Theme</button>
+      <button id="logoutBtn" class="btn" aria-label="Logout">Logout</button>
+    </div>
+  </div>
+</header>
+<main class="container" style="padding:16px 0">
+  <h1>Settings</h1>
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>Shop</h3>
+      <label>Name</label>
+      <input id="shopName">
+      <label>Phone</label>
+      <input id="shopPhone">
+      <label>Email</label>
+      <input id="shopEmail" type="email">
+      <div class="toolbar" style="margin-top:10px">
+        <button id="saveShop" class="btn primary">Save</button>
+      </div>
+      <p class="notice" id="shopSaved"></p>
+    </div>
+
+    <div class="card">
+      <!-- Services -->
+<h3>Services</h3>
+<div id="svcList"></div>
+
+<!-- ADD/EDIT ROW -->
+<div class="grid cols-4" style="margin-top:10px">
+  <input id="svcName" placeholder="Service name">
+  <input id="svcPrice" type="number" placeholder="Parts $">
+  <input id="svcLabor" type="number" step="0.01" placeholder="Labor $/hr">
+  <input id="svcHours" type="number" step="0.25" placeholder="Hours">
+</div>
+<div class="toolbar" style="margin-top:8px;justify-content:space-between">
+  <div><button id="manageRates" class="btn">Manage Labor Rates</button></div>
+  <div><button id="svcAdd" class="btn primary">Add</button></div>
+</div>
+<p class="notice">Click a service to remove it.</p>
+
+    </div>
+  </div>
+</main>
+<footer class="container">© GR</footer>
+<script src="app.js"></script><script src="multi-tenant.js"></script>
+</body></html>

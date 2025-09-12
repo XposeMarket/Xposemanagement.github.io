@@ -1,0 +1,54 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Appointments</title><link rel="stylesheet" href="styles.css"></head><body>
+<header class="top">
+  <div class="container row top row">
+    <a class="brand" href="dashboard.html" aria-label="Xpose Management Home">
+      <img src="assets/logo.svg" alt="Xpose Management logo">
+      <b>Xpose Management</b>
+    </a>
+    <nav>
+      <a href="dashboard.html" class="">Dashboard</a>
+      <a href="appointments.html" class="active">Appointments</a>
+      <a href="jobs.html" class="">Jobs</a>
+      <a href="messages.html" class="">Messages</a>
+      <a href="invoices.html" class="">Invoices</a>
+      <a href="settings.html" class="">Settings</a>
+      <a href="profile.html" class="">Profile</a>
+    </nav>
+    <div>
+      <button id="themeToggle" class="btn" aria-label="Toggle theme">Theme</button>
+      <button id="logoutBtn" class="btn" aria-label="Logout">Logout</button>
+    </div>
+  </div>
+</header>
+<main class="container" style="padding:16px 0"><h1>Appointments</h1><div class="card"><div class="toolbar"><button id="newAppt" class="btn primary">New Appointment</button><input id="apptSearch" placeholder="Search…"><select id="apptStatus"><option value="">All Statuses</option><option>new</option><option>scheduled</option><option>in_progress</option><option>awaiting_parts</option><option>completed</option></select><button id="apptFilter" class="btn">Apply</button></div><table class="table" id="apptTable"><thead><tr><th>Created</th><th>Customer</th><th>Vehicle</th><th>Service</th><th>Date</th><th>Time</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table><p class="notice" id="apptEmpty"></p></div></main><div id="apptModal" class="card hidden" style="position:fixed;right:20px;bottom:20px;max-width:540px"><h3>New Appointment</h3><div class="grid cols-2"><div><label>First name</label><input id="naFirst"></div><div><label>Last name</label><input id="naLast"></div></div><label>Email (optional)</label><input id="naEmail" type="email"><label>Phone</label><input id="naPhone"><label>Vehicle (Year Make Model)</label><input id="naVehicle"><div class="grid cols-2"><div><label>Service</label><input id="naService"></div><div><label>Date</label><input id="naDate" type="date"></div></div><label>Time</label><input id="naTime" type="time"><div class="toolbar" style="margin-top:10px"><button id="saveAppt" class="btn primary">Save</button><button id="closeAppt" class="btn">Close</button></div></div><footer class="container">© GR</footer><!-- Edit Service (Appointments) -->
+<div id="editSvcModal" class="card hidden" style="position:fixed;right:20px;bottom:20px;max-width:540px;z-index:50">
+  <div class="toolbar" style="justify-content:space-between">
+    <h3>Edit Service</h3>
+    <button id="closeEditSvc" class="btn">Close</button>
+  </div>
+  <label>Service</label>
+  <input id="esService" placeholder="Service name">
+  <div class="grid cols-3">
+    <div>
+      <label>Parts $</label>
+      <input id="esParts" type="number" step="0.01">
+    </div>
+    <div>
+      <label>Labor $/hr</label>
+      <div class="row" style="display:flex;gap:8px">
+        <input id="esLabor" type="number" step="0.01">
+        <button id="esPickRate" class="btn">Choose rate</button>
+      </div>
+    </div>
+    <div>
+      <label>Hours</label>
+      <input id="esHours" type="number" step="0.25">
+    </div>
+  </div>
+  <div class="toolbar" style="margin-top:10px;justify-content:flex-end">
+    <button id="saveEditSvc" class="btn primary">Save</button>
+  </div>
+  <p id="esNotice" class="notice"></p>
+</div>
+<script src="app.js"></script><script src="multi-tenant.js"></script>
+</body></html>
