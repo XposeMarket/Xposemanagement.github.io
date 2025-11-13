@@ -1,0 +1,1305 @@
+/**
+ * pages/invoices.js
+ * Invoices page setup - FIXED VERSION
+ *
+ * Imported by: app.js
+ * Imports from: helpers/
+ */
+
+import { getSupabaseClient } from '../helpers/supabase.js';
+
+function setupInvoices() {
+  // Load invoices from Supabase or localStorage
+  const supabase = getSupabaseClient();
+  const shopId = getCurrentShopId();
+  let invoices = [];
+  let appointments = [];
+  let users = [];
+  let jobs = [];
+  let settings = {};
+  let currentInvoiceForRemove = null;
+  // Sorting state for invoices
+  let invoiceSortCol = 'number';
+  let invoiceSortDir = 'asc';
+  // Confirm modal state
+  let currentConfirmInvoice = null;
+  let currentConfirmAction = null; // 'paid' or 'unpaid'
+
+  // Helper to get shop/session
+  function getCurrentShopId() {
+    try {
+      const session = JSON.parse(localStorage.getItem('xm_session') || '{}');
+      return session.shopId || null;
+    } catch (e) { return null; }
+  }
+
+  // Load data
+  async function loadData() {
+    console.log('[Invoices] Loading data...');
+    if (supabase) {
+      const { data, error } = await supabase.from('data').select('invoices,appointments,jobs,settings').eq('shop_id', shopId).single();
+      if (error) {
+        console.error('[Invoices] Supabase load error:', error);
+        return;
+      }
+      invoices = data?.invoices || [];
+      appointments = data?.appointments || [];
+      jobs = data?.jobs || [];
+      settings = data?.settings || {};
+      console.log(`[Invoices] Loaded ${invoices.length} invoices, ${appointments.length} appointments, ${jobs.length} jobs`);
+    } else {
+      const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+      invoices = data.invoices || [];
+      appointments = data.appointments || [];
+      jobs = data.jobs || [];
+      settings = data.settings || {};
+      console.log(`[Invoices] Loaded ${invoices.length} invoices, ${appointments.length} appointments, ${jobs.length} jobs from localStorage`);
+    }
+    users = JSON.parse(localStorage.getItem('xm_users') || '[]');
+    console.log(`[Invoices] Loaded ${users.length} users`);
+  }
+
+  // Render invoice tables
+  function renderInvoices() {
+    // Check if we need to auto-open an invoice modal
+    const openInvoiceId = localStorage.getItem('openInvoiceId');
+    if (openInvoiceId) {
+      const inv = invoices.find(i => i.id == openInvoiceId);
+      if (inv) {
+        openInvoiceModal(inv);
+        localStorage.removeItem('openInvoiceId');
+      }
+    }
+    const tb = document.querySelector('#invTable tbody');
+    const empty = document.getElementById('invEmpty');
+    tb.innerHTML = '';
+  let openInvoices = invoices.filter(inv => inv.status !== 'paid');
+  // Sort open invoices
+  openInvoices = sortInvoicesArray(openInvoices, invoiceSortCol, invoiceSortDir);
+    if (!openInvoices.length) {
+      empty.textContent = 'No open invoices.';
+      return;
+    }
+    empty.textContent = '';
+    openInvoices.forEach(inv => {
+      // Try to get customer/info from jobs table if available
+      let job = jobs.find(j => j.appointment_id === inv.appointment_id);
+      let customer = job?.customer || inv.customer || '';
+      console.log(`[Invoices] Rendering invoice ${inv.id}: job=${job ? job.id : 'none'}, customer=${customer}`);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${inv.number || inv.id}</td>
+        <td>${customer}</td>
+        <td>$${calcTotal(inv).toFixed(2)}</td>
+        <td>${inv.status || 'open'}</td>
+        <td>${inv.due || ''}</td>
+        <td style="text-align:right">
+          <div class="appt-actions-grid" style="display:inline-grid;">
+            <button class="btn small" data-id="${inv.id}" data-action="view">View</button>
+            <button class="btn small" data-id="${inv.id}" data-action="markPaid">Mark Paid</button>
+            <button class="btn small info" data-id="${inv.id}" data-action="edit">Edit</button>
+            <button class="btn small danger" data-id="${inv.id}" data-action="remove" aria-label="Remove invoice"><svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="white" d="M3 6h18v2H3V6zm2 3h14l-1 12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2l-1-12zM9 4V3a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1h5v2H4V4h5z"/></svg></button>
+          </div>
+        </td>
+      `;
+      // On mobile, make row clickable to open actions modal
+      if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) {
+        tr.classList.add('inv-row-clickable');
+        tr.addEventListener('click', (e) => {
+          if (e.target.closest('button')) return;
+          window.openInvoiceActionsModal(inv);
+        });
+      }
+      tb.appendChild(tr);
+
+// Modal for invoice actions (mobile) - must be global for row click
+window.openInvoiceActionsModal = function(inv) {
+  let modal = document.getElementById('invoiceActionsModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'invoiceActionsModal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-content card" style="max-width:340px;margin:18vh auto;">
+        <h3>Invoice Actions</h3>
+        <div id="invoiceActionsBtns" style="display:flex;flex-direction:column;gap:12px;margin:18px 0;"></div>
+        <button class="btn" id="closeInvoiceActions">Close</button>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+  const btns = modal.querySelector('#invoiceActionsBtns');
+  btns.innerHTML = '';
+  // Add action buttons (View, Edit, Mark Paid, Remove)
+  const viewBtn = document.createElement('button');
+  viewBtn.className = 'btn';
+  viewBtn.textContent = 'View';
+  viewBtn.onclick = () => { modal.classList.add('hidden'); openInvoiceModal(inv); };
+  btns.appendChild(viewBtn);
+  const editBtn = document.createElement('button');
+  editBtn.className = 'btn info';
+  editBtn.textContent = 'Edit';
+  editBtn.onclick = () => { modal.classList.add('hidden'); openInvoiceModal(inv, true); };
+  btns.appendChild(editBtn);
+  const markPaidBtn = document.createElement('button');
+  markPaidBtn.className = 'btn';
+  markPaidBtn.textContent = 'Mark Paid';
+  markPaidBtn.onclick = () => { modal.classList.add('hidden'); markInvoicePaid(inv); };
+  btns.appendChild(markPaidBtn);
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'btn danger';
+  removeBtn.textContent = 'Remove';
+  removeBtn.onclick = () => { modal.classList.add('hidden'); openRemoveModal(inv); };
+  btns.appendChild(removeBtn);
+  modal.classList.remove('hidden');
+  modal.querySelector('#closeInvoiceActions').onclick = () => modal.classList.add('hidden');
+};
+    });
+  }
+
+  function renderPrevInvoices() {
+    const tb = document.querySelector('#prevTable tbody');
+    const empty = document.getElementById('prevEmpty');
+    tb.innerHTML = '';
+  let paidInvoices = invoices.filter(inv => inv.status === 'paid');
+  // Sort paid invoices
+  paidInvoices = sortInvoicesArray(paidInvoices, invoiceSortCol, invoiceSortDir);
+    if (!paidInvoices.length) {
+      empty.textContent = 'No paid invoices.';
+      return;
+    }
+    empty.textContent = '';
+    paidInvoices.forEach(inv => {
+      let job = jobs.find(j => j.appointment_id === inv.appointment_id);
+      let customer = job?.customer || inv.customer || '';
+      console.log(`[Invoices] Rendering PAID invoice ${inv.id}: job=${job ? job.id : 'none'}, customer=${customer}`);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${inv.number || inv.id}</td>
+        <td>${customer}</td>
+        <td>$${calcTotal(inv).toFixed(2)}</td>
+        <td>${inv.status || 'paid'}</td>
+        <td>${inv.due || ''}</td>
+        <td style="text-align:right">
+          <div class="appt-actions-grid" style="display:inline-grid;">
+            <button class="btn small info" data-id="${inv.id}" data-action="view">View</button>
+            <button class="btn small" data-id="${inv.id}" data-action="markUnpaid">Mark Unpaid</button>
+            <button class="btn small danger" data-id="${inv.id}" data-action="remove" aria-label="Remove invoice"><svg width="14" height="14" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="white" d="M3 6h18v2H3V6zm2 3h14l-1 12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2l-1-12zM9 4V3a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1h5v2H4V4h5z"/></svg></button>
+          </div>
+        </td>
+      `;
+      tb.appendChild(tr);
+    });
+  }
+
+  // Sort helper for invoices
+  function sortInvoicesArray(arr, col, dir) {
+    const wrapped = [...arr];
+    wrapped.sort((a, b) => {
+      const getVal = (inv) => {
+        switch (col) {
+          case 'number': return parseInt(inv.number) || 0;
+          case 'customer': return (inv.customer || '').toLowerCase();
+          case 'total': return calcTotal(inv);
+          case 'status': return (inv.status || '').toLowerCase();
+          case 'due': return (inv.due || '').toLowerCase();
+          default: return (inv.number || 0);
+        }
+      };
+      const va = getVal(a);
+      const vb = getVal(b);
+      if (typeof va === 'number' && typeof vb === 'number') return dir === 'asc' ? va - vb : vb - va;
+      if (va < vb) return dir === 'asc' ? -1 : 1;
+      if (va > vb) return dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return wrapped;
+  }
+
+  // Confirm modal helpers
+  function openConfirmPayModal(inv, action) {
+    currentConfirmInvoice = inv;
+    currentConfirmAction = action; // 'paid' or 'unpaid'
+    const modal = document.getElementById('confirmPayModal');
+    const title = document.getElementById('confirmPayTitle');
+    const msg = document.getElementById('confirmPayMessage');
+    if (!modal || !title || !msg) return;
+    title.textContent = action === 'paid' ? 'Confirm Mark Paid' : 'Confirm Mark Unpaid';
+    msg.textContent = action === 'paid' ? `Mark invoice #${inv.number || inv.id} as PAID?` : `Mark invoice #${inv.number || inv.id} as UNPAID?`;
+    modal.classList.remove('hidden');
+  }
+
+  function closeConfirmPayModal() {
+    const modal = document.getElementById('confirmPayModal');
+    if (modal) modal.classList.add('hidden');
+    currentConfirmInvoice = null;
+    currentConfirmAction = null;
+  }
+
+  // Expose for onclick in markup fallback (safe)
+  window.closeConfirmPayModal = closeConfirmPayModal;
+
+  // Calculate invoice total
+  function calcTotal(inv) {
+    let subtotal = (inv.items || []).reduce((sum, itm) => sum + (itm.qty * itm.price), 0);
+    let tax = subtotal * ((inv.tax_rate || 0) / 100);
+    let discount = subtotal * ((inv.discount || 0) / 100);
+    return subtotal + tax - discount;
+  }
+
+  // View invoice modal
+  function openInvoiceModal(inv) {
+    // Add Parts/Labor/Service quick buttons (top toolbar)
+    const addPartEl = document.getElementById('addPart');
+    const addLaborEl = document.getElementById('addLabor');
+    const addServiceEl = document.getElementById('addService');
+    if (addPartEl) addPartEl.onclick = () => { inv.items = inv.items || []; inv.items.push({ name: '', qty: 1, price: '', type: 'part' }); renderItems(inv.items); scrollInvoiceModalToBottom(); };
+    if (addLaborEl) addLaborEl.onclick = () => { inv.items = inv.items || []; inv.items.push({ name: '', qty: 1, price: '', type: 'labor' }); renderItems(inv.items); scrollInvoiceModalToBottom(); };
+    if (addServiceEl) addServiceEl.onclick = () => { inv.items = inv.items || []; inv.items.push({ name: '', qty: 1, price: '', type: 'service' }); renderItems(inv.items); scrollInvoiceModalToBottom(); };
+
+    const modal = document.getElementById('invModal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    document.getElementById('invTitle').textContent = `Invoice #${inv.number || inv.id}`;
+    // Prefer job customer if available
+    let job = jobs.find(j => j.appointment_id === inv.appointment_id);
+    let customer = job?.customer || inv.customer || '';
+    console.log(`[Invoices] Opening invoice modal for ${inv.id}: job=${job ? job.id : 'none'}, customer=${customer}`);
+    document.getElementById('invCustomer').value = customer;
+    document.getElementById('invAppt').value = inv.appointment_id || '';
+    document.getElementById('invTax').value = inv.tax_rate || settings.default_tax_rate || 6;
+    document.getElementById('invDisc').value = inv.discount || settings.default_discount || 0;
+    document.getElementById('invDue').value = inv.due || '';
+    // Render existing items
+    renderItems(inv.items || []);
+    // Wire the floating + button to show the item type modal
+    const floatingAdd = document.getElementById('floatingAdd');
+    const itemTypeModal = document.getElementById('itemTypeModal');
+    if (floatingAdd && itemTypeModal) {
+      floatingAdd.onclick = (e) => { e.preventDefault(); itemTypeModal.classList.remove('hidden'); };
+    }
+    // Wire the item type modal buttons
+    const addPartBtn = document.getElementById('addPartBtn');
+    const addLaborBtn = document.getElementById('addLaborBtn');
+    const addServiceBtn = document.getElementById('addServiceBtn');
+    const cancelItemBtn = document.getElementById('cancelItemBtn');
+    if (addPartBtn) addPartBtn.onclick = () => { itemTypeModal.classList.add('hidden'); inv.items = inv.items || []; inv.items.push({ name: '', qty: 1, price: '', type: 'part' }); renderItems(inv.items); scrollInvoiceModalToBottom(); };
+    if (addLaborBtn) addLaborBtn.onclick = () => { itemTypeModal.classList.add('hidden'); inv.items = inv.items || []; inv.items.push({ name: '', qty: 1, price: '', type: 'labor' }); renderItems(inv.items); scrollInvoiceModalToBottom(); };
+    if (addServiceBtn) addServiceBtn.onclick = () => { itemTypeModal.classList.add('hidden'); inv.items = inv.items || []; inv.items.push({ name: '', qty: 1, price: '', type: 'service' }); renderItems(inv.items); scrollInvoiceModalToBottom(); };
+    if (cancelItemBtn) cancelItemBtn.onclick = () => { itemTypeModal.classList.add('hidden'); };
+    document.getElementById('subTotal').textContent = calcTotal(inv).toFixed(2);
+    document.getElementById('grandTotal').textContent = calcTotal(inv).toFixed(2);
+    // Save button
+    document.getElementById('saveInv').onclick = () => saveInvoice(inv);
+      // Close button
+      document.getElementById('closeInv').onclick = () => {
+        document.getElementById('invModal').classList.add('hidden');
+      };
+      // Note: generic Add Item button removed; only Parts and Labor are allowed
+  }
+
+  // Persist a labor rate from the invoice modal into settings (data table)
+  async function addLaborRateFromInvoice(name, rate) {
+    if (!name) throw new Error('Name required');
+    settings.labor_rates = settings.labor_rates || [];
+    if (settings.labor_rates.some(r => r.name === name)) throw new Error('Labor rate exists');
+
+    settings.labor_rates.push({ name, rate });
+
+    // Persist via Supabase or localStorage similar to settings.saveSettings
+    try {
+      if (supabase) {
+        const { data: currentData, error: fetchError } = await supabase
+          .from('data')
+          .select('*')
+          .eq('shop_id', shopId)
+          .single();
+
+        if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
+
+        const payload = {
+          shop_id: shopId,
+          settings: settings,
+          appointments: currentData?.appointments || [],
+          jobs: currentData?.jobs || [],
+          threads: currentData?.threads || [],
+          invoices: currentData?.invoices || [],
+          updated_at: new Date().toISOString()
+        };
+
+        const { error } = await supabase.from('data').upsert(payload, { onConflict: 'shop_id' });
+        if (error) throw error;
+      } else {
+        const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+        data.settings = settings;
+        localStorage.setItem('xm_data', JSON.stringify(data));
+      }
+
+      // Update local cache and notify
+      try {
+        localStorage.setItem('xm_data', JSON.stringify({ ...(JSON.parse(localStorage.getItem('xm_data') || '{}')), settings }));
+        window.dispatchEvent(new Event('xm_data_updated'));
+      } catch (e) { console.warn('Failed to update local cache after adding labor rate', e); }
+
+      return true;
+    } catch (ex) {
+      console.error('Error saving labor rate:', ex);
+      throw ex;
+    }
+  }
+
+  // Persist a service preset from the invoice modal into settings (data table)
+  async function addServiceFromInvoice(name, price) {
+    if (!name) throw new Error('Name required');
+    settings.services = settings.services || [];
+    if (settings.services.some(s => s.name === name)) throw new Error('Service exists');
+
+    settings.services.push({ name: name, price: price });
+
+    try {
+      if (supabase) {
+        const { data: currentData, error: fetchError } = await supabase
+          .from('data')
+          .select('*')
+          .eq('shop_id', shopId)
+          .single();
+
+        if (fetchError && fetchError.code !== 'PGRST116') throw fetchError;
+
+        const payload = {
+          shop_id: shopId,
+          settings: settings,
+          appointments: currentData?.appointments || [],
+          jobs: currentData?.jobs || [],
+          threads: currentData?.threads || [],
+          invoices: currentData?.invoices || [],
+          updated_at: new Date().toISOString()
+        };
+
+        const { error } = await supabase.from('data').upsert(payload, { onConflict: 'shop_id' });
+        if (error) throw error;
+      } else {
+        const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+        data.settings = settings;
+        localStorage.setItem('xm_data', JSON.stringify(data));
+      }
+
+      try {
+        localStorage.setItem('xm_data', JSON.stringify({ ...(JSON.parse(localStorage.getItem('xm_data') || '{}')), settings }));
+        window.dispatchEvent(new Event('xm_data_updated'));
+      } catch (e) { console.warn('Failed to update local cache after adding service', e); }
+
+      return true;
+    } catch (ex) {
+      console.error('Error saving service:', ex);
+      throw ex;
+    }
+  }
+
+  // Render invoice items
+  function renderItems(items) {
+    const itemsDiv = document.getElementById('items');
+    itemsDiv.innerHTML = '';
+    const laborRates = (settings && settings.labor_rates) || [];
+    items.forEach((itm, idx) => {
+      // Wrap each item in a block so we can show a meta line above and a separator between items
+      const block = document.createElement('div');
+      block.className = 'inv-item-block';
+
+      const row = document.createElement('div');
+      row.className = 'grid cols-3 item-row';
+  // temp holder for any initial price we want applied to priceInput (used for custom preset handling)
+  let initialPrice;
+
+      // Name / selector
+      const nameInput = document.createElement('input');
+      nameInput.className = 'itm-name';
+      nameInput.value = itm.name || '';
+
+      // For labor items, provide a select populated from settings.labor_rates
+      let laborSelect = null;
+      if ((itm.type || 'part') === 'labor') {
+        laborSelect = document.createElement('select');
+        laborSelect.className = 'itm-labor-select';
+  // First placeholder (disabled) so nothing is chosen by default
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.text = '-- select labor --';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  laborSelect.appendChild(placeholder);
+  // Special 'Custom' option that allows free-text entry
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.text = 'Custom';
+  laborSelect.appendChild(customOpt);
+        laborRates.forEach(r => {
+          const opt = document.createElement('option');
+          opt.value = r.name;
+          opt.dataset.rate = r.rate;
+          opt.text = `${r.name} - $${r.rate}/hr`;
+          laborSelect.appendChild(opt);
+        });
+        // If item has a name matching a rate, preselect it; if it's a custom name, select 'Custom' and show it
+        if (itm.name) {
+          const exists = laborRates.some(r => r.name === itm.name);
+          if (exists) {
+            laborSelect.value = itm.name;
+          } else {
+            // pre-existing custom labor entry -> select Custom so the UI shows the name input
+            laborSelect.value = '__custom__';
+            nameInput.value = itm.name;
+            initialPrice = itm.price || '';
+            // hide the select now so the name input occupies the same place
+            laborSelect.style.display = 'none';
+            nameInput.style.display = '';
+          }
+        }
+        // If not a custom selection, default the free-text name input to hidden so the select is primary
+        if (laborSelect.value !== '__custom__') {
+          nameInput.style.display = 'none';
+        }
+      }
+
+  // Quantity
+      const qtyInput = document.createElement('input');
+      qtyInput.type = 'number';
+      qtyInput.className = 'itm-qty';
+      qtyInput.value = (itm.qty !== undefined && itm.qty !== null) ? itm.qty : 1;
+      qtyInput.min = 0;
+
+      // Price (allow blank)
+      const priceInput = document.createElement('input');
+      priceInput.type = 'number';
+      priceInput.step = '0.01';
+      priceInput.className = 'itm-price';
+      priceInput.value = (itm.price === '' || itm.price === undefined || itm.price === null) ? '' : itm.price;
+        if (typeof initialPrice !== 'undefined') {
+          priceInput.value = initialPrice;
+        }
+
+      // Type (hidden) - store item type for save logic but don't show a visible label
+  const typeInput = document.createElement('input');
+  typeInput.type = 'hidden';
+  typeInput.className = 'itm-type';
+  typeInput.value = itm.type || 'part';
+
+      // For service items, provide a select populated from settings.services (mirrors labor UI)
+      let serviceSelect = null;
+      if ((itm.type || 'part') === 'service') {
+        serviceSelect = document.createElement('select');
+        serviceSelect.className = 'itm-service-select';
+        const svcPlaceholder = document.createElement('option');
+        svcPlaceholder.value = '';
+        svcPlaceholder.text = '-- select service --';
+        svcPlaceholder.disabled = true;
+        svcPlaceholder.selected = true;
+        serviceSelect.appendChild(svcPlaceholder);
+        const svcCustomOpt = document.createElement('option');
+        svcCustomOpt.value = '__custom__';
+        svcCustomOpt.text = 'Custom';
+        serviceSelect.appendChild(svcCustomOpt);
+        const services = (settings && settings.services) || [];
+        services.forEach(s => {
+          const opt = document.createElement('option');
+          opt.value = s.name;
+          opt.dataset.price = s.price;
+          opt.text = `${s.name} - $${s.price}`;
+          serviceSelect.appendChild(opt);
+        });
+        // If item name matches preset, preselect it
+        if (itm.name) {
+          const exists = (settings.services || []).some(s => s.name === itm.name);
+          if (exists) {
+            serviceSelect.value = itm.name;
+            // ensure price/name reflect preset
+            const svc = (settings.services || []).find(s => s.name === itm.name);
+            priceInput.value = svc ? svc.price : '';
+            nameInput.value = svc ? svc.name : itm.name;
+            // hide name input since select is primary
+            nameInput.style.display = 'none';
+          } else {
+            // custom
+            serviceSelect.value = '__custom__';
+            nameInput.value = itm.name;
+            priceInput.value = itm.price || '';
+            serviceSelect.style.display = 'none';
+            nameInput.style.display = '';
+          }
+        } else {
+          // default: hide free-text name until custom selected
+          nameInput.style.display = 'none';
+        }
+      }
+
+      // Remove button
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'btn danger itm-remove';
+      removeBtn.dataset.idx = idx;
+      removeBtn.textContent = 'Remove';
+
+  
+
+      // Compose row: for labor/service, show select then name input then qty then price; for parts, show name input then qty then price
+      if (laborSelect) {
+        row.appendChild(laborSelect);
+        row.appendChild(nameInput);
+      } else if (serviceSelect) {
+        row.appendChild(serviceSelect);
+        row.appendChild(nameInput);
+      } else row.appendChild(nameInput);
+      row.appendChild(qtyInput);
+  row.appendChild(priceInput);
+  // keep hidden type input and remove button (save will read .itm-type)
+  row.appendChild(typeInput);
+      row.appendChild(removeBtn);
+
+      // Wire interactions - open confirm modal before removing
+      removeBtn.addEventListener('click', () => {
+        openConfirmItemRemove(idx, items);
+      });
+
+      if (laborSelect) {
+        // If preselected and not Custom, populate name/price from the selected rate
+        if (laborSelect.value && laborSelect.value !== '__custom__') {
+          const rate = laborRates.find(r => r.name === laborSelect.value);
+          priceInput.value = rate ? rate.rate : '';
+          nameInput.value = rate ? rate.name : laborSelect.value;
+        }
+      }
+
+      if (serviceSelect) {
+        if (serviceSelect.value && serviceSelect.value !== '__custom__') {
+          const svc = (settings.services || []).find(s => s.name === serviceSelect.value);
+          priceInput.value = svc ? svc.price : '';
+          nameInput.value = svc ? svc.name : serviceSelect.value;
+        }
+      }
+
+        // === Per-item remove confirmation (modal themed) ===
+        let __pendingRemoveIndex = null;
+        function openConfirmItemRemove(idx, itemsArr) {
+          __pendingRemoveIndex = idx;
+          const modal = document.getElementById('confirmItemRemoveModal');
+          const msg = document.getElementById('confirmItemRemoveMessage');
+          const name = (itemsArr && itemsArr[idx] && itemsArr[idx].name) ? itemsArr[idx].name : 'this item';
+          if (msg) msg.textContent = `Remove "${name}" from the invoice?`;
+          if (modal) modal.classList.remove('hidden');
+
+          const confirmBtn = document.getElementById('confirmItemRemoveConfirm');
+          const cancelBtn = document.getElementById('confirmItemRemoveCancel');
+
+          if (confirmBtn) {
+            confirmBtn.onclick = () => {
+              try {
+                if (Array.isArray(itemsArr) && __pendingRemoveIndex !== null && itemsArr[__pendingRemoveIndex]) {
+                  itemsArr.splice(__pendingRemoveIndex, 1);
+                }
+              } catch (e) { console.error('Error removing item', e); }
+              // re-render and hide modal
+              renderItems(itemsArr || []);
+              if (modal) modal.classList.add('hidden');
+              __pendingRemoveIndex = null;
+            };
+          }
+          if (cancelBtn) {
+            cancelBtn.onclick = () => {
+              if (modal) modal.classList.add('hidden');
+              __pendingRemoveIndex = null;
+            };
+          }
+        }
+
+        function closeConfirmItemRemoveModal() {
+          const modal = document.getElementById('confirmItemRemoveModal');
+          if (modal) modal.classList.add('hidden');
+          __pendingRemoveIndex = null;
+        }
+        window.closeConfirmItemRemoveModal = closeConfirmItemRemoveModal;
+  // + button to save a custom labor rate to Settings (only shown when placeholder selected)
+  const addRateBtn = document.createElement('button');
+  addRateBtn.className = 'btn small info';
+  addRateBtn.style.display = 'none';
+  addRateBtn.textContent = '+';
+  addRateBtn.title = 'Save as labor rate';
+
+  // + button to save a custom service preset to Settings (only shown when service Custom selected)
+  const addServiceBtnSmall = document.createElement('button');
+  addServiceBtnSmall.className = 'btn small info';
+  addServiceBtnSmall.style.display = 'none';
+  addServiceBtnSmall.textContent = '+';
+  addServiceBtnSmall.title = 'Save as service';
+
+      // Show/hide addRateBtn when select changes
+      if (laborSelect) {
+        const updateAddBtn = () => {
+          const sel = laborSelect.value;
+          // only show the add-rate controls when the user explicitly selects the 'Custom' option
+          if (sel === '__custom__') {
+            // hide the select and reveal the free-text input in the same spot
+            laborSelect.style.display = 'none';
+            nameInput.style.display = '';
+            addRateBtn.style.display = '';
+          } else {
+            // show the select (presets) and hide the free-text input
+            laborSelect.style.display = '';
+            nameInput.style.display = 'none';
+            addRateBtn.style.display = 'none';
+          }
+        };
+        laborSelect.addEventListener('change', updateAddBtn);
+        // initial state
+        updateAddBtn();
+      }
+
+      if (serviceSelect) {
+        const updateAddSvcBtn = () => {
+          const sel = serviceSelect.value;
+          if (sel === '__custom__') {
+            serviceSelect.style.display = 'none';
+            nameInput.style.display = '';
+            addServiceBtnSmall.style.display = '';
+          } else {
+            serviceSelect.style.display = '';
+            nameInput.style.display = 'none';
+            addServiceBtnSmall.style.display = 'none';
+          }
+        };
+        serviceSelect.addEventListener('change', updateAddSvcBtn);
+        updateAddSvcBtn();
+      }
+
+      // change handler: populate name/price for presets; for Custom, allow free input
+      if (laborSelect) {
+        laborSelect.addEventListener('change', () => {
+          const sel = laborSelect.value;
+          if (sel === '__custom__') {
+            // custom selected - clear name so user can type
+            nameInput.value = '';
+            priceInput.value = '';
+            return;
+          }
+          const rate = laborRates.find(r => r.name === sel);
+          // Ensure we store only the labor name (not the display text with price)
+          nameInput.value = rate ? rate.name : sel;
+          priceInput.value = rate ? rate.rate : '';
+        });
+      }
+
+      if (serviceSelect) {
+        serviceSelect.addEventListener('change', () => {
+          const sel = serviceSelect.value;
+          if (sel === '__custom__') {
+            nameInput.value = '';
+            priceInput.value = '';
+            return;
+          }
+          const svc = (settings.services || []).find(s => s.name === sel);
+          nameInput.value = svc ? svc.name : sel;
+          priceInput.value = svc ? svc.price : '';
+        });
+      }
+
+      addRateBtn.addEventListener('click', async () => {
+        const newName = (nameInput.value || '').trim();
+        const newPrice = parseFloat(priceInput.value) || 0;
+        if (!newName) {
+          showNotification('Please enter a name for the labor rate', 'error');
+          return;
+        }
+        try {
+          await addLaborRateFromInvoice(newName, newPrice);
+          // add option to select and select it
+          const opt = document.createElement('option');
+          opt.value = newName;
+          opt.dataset.rate = newPrice;
+          opt.text = `${newName} - $${newPrice}/hr`;
+          if (laborSelect) laborSelect.appendChild(opt);
+          if (laborSelect) {
+            // ensure the select is visible again and select the new option
+            laborSelect.style.display = '';
+            laborSelect.value = newName;
+          }
+          // hide add button and name input now that preset exists
+          nameInput.style.display = 'none';
+          addRateBtn.style.display = 'none';
+          showNotification('Labor rate saved to Settings');
+        } catch (e) {
+          console.error('Failed to save labor rate from invoice:', e);
+          showNotification('Failed to save labor rate', 'error');
+        }
+      });
+
+      addServiceBtnSmall.addEventListener('click', async () => {
+        const newName = (nameInput.value || '').trim();
+        const newPrice = parseFloat(priceInput.value) || 0;
+        if (!newName) {
+          showNotification('Please enter a name for the service', 'error');
+          return;
+        }
+        try {
+          await addServiceFromInvoice(newName, newPrice);
+          const opt = document.createElement('option');
+          opt.value = newName;
+          opt.dataset.price = newPrice;
+          opt.text = `${newName} - $${newPrice}`;
+          if (serviceSelect) serviceSelect.appendChild(opt);
+          if (serviceSelect) {
+            serviceSelect.style.display = '';
+            serviceSelect.value = newName;
+          }
+          nameInput.style.display = 'none';
+          addServiceBtnSmall.style.display = 'none';
+          showNotification('Service saved to Settings');
+        } catch (e) {
+          console.error('Failed to save service from invoice:', e);
+          showNotification('Failed to save service', 'error');
+        }
+      });
+
+  // append add-rate / add-service small buttons if present (after they're initialized)
+  if (laborSelect) row.appendChild(addRateBtn);
+  if (serviceSelect) row.appendChild(addServiceBtnSmall);
+
+      // Meta line: show Parts / Labor totals for this item above the row
+      const meta = document.createElement('div');
+      meta.className = 'inv-item-meta';
+      const qty = Number(itm.qty) || Number(qtyInput.value) || 0;
+      const price = Number(itm.price) || Number(priceInput.value) || 0;
+      const amt = (qty * price) || 0;
+      const partsText = (itm.type || '').toLowerCase() === 'part' ? `Parts: $${amt.toFixed(2)}` : '';
+      const laborText = (itm.type || '').toLowerCase() === 'labor' ? `Labor: $${amt.toFixed(2)}` : '';
+      meta.textContent = [partsText, laborText].filter(Boolean).join(' · ');
+
+      // If no explicit type, but price/qty present, show a small cost summary
+      if (!meta.textContent) {
+        meta.textContent = `Cost: $${amt.toFixed(2)}`;
+      }
+
+      // Build block: meta above, then row
+      block.appendChild(meta);
+      block.appendChild(row);
+      itemsDiv.appendChild(block);
+    });
+    // add a small spacer so the modal can scroll a bit past the last row
+    itemsDiv.style.paddingBottom = '36px';
+  }
+
+  // helper: scroll invoice modal body to bottom with small extra offset so last row is visible above floating +
+  function scrollInvoiceModalToBottom() {
+    const modalBody = document.querySelector('#invModal .modal-body');
+    if (!modalBody) return;
+    // small delay to allow reflow after render
+    setTimeout(() => {
+      modalBody.scrollTop = modalBody.scrollHeight - modalBody.clientHeight + 12;
+    }, 40);
+  }
+
+  // Save invoice (upserts to invoices table)
+  async function saveInvoice(inv) {
+    // Update invoice fields
+  inv.customer = document.getElementById('invCustomer').value;
+  inv.appointment_id = document.getElementById('invAppt').value;
+  inv.tax_rate = parseFloat(document.getElementById('invTax').value) || settings.default_tax_rate || 6;
+  inv.discount = parseFloat(document.getElementById('invDisc').value) || settings.default_discount || 0;
+  inv.due = document.getElementById('invDue').value || new Date().toISOString().slice(0,10);
+    inv.updated_at = new Date().toISOString();
+    
+    // Items
+    let job = jobs.find(j => j.appointment_id === inv.appointment_id);
+    if (job && (!inv.items || inv.items.length === 0)) {
+      // If invoice has no items, copy from job
+      inv.items = job.items ? JSON.parse(JSON.stringify(job.items)) : [];
+    } else {
+      inv.items = Array.from(document.querySelectorAll('#items .grid')).map(row => {
+        // Read raw values
+        const rawNameEl = row.querySelector('.itm-name');
+        const rawSelect = row.querySelector('.itm-labor-select');
+        // Prefer the select value for labor presets; if the select is the Custom option, use the free-text name input
+        let rawName = '';
+        if (rawSelect) {
+          if (rawSelect.value && rawSelect.value !== '__custom__') {
+            rawName = rawSelect.value;
+          } else {
+            rawName = rawNameEl ? rawNameEl.value : (rawSelect ? rawSelect.value : '');
+          }
+        } else {
+          rawName = rawNameEl ? rawNameEl.value : '';
+        }
+        // Sanitize name: strip trailing " - $xx/hr" if present (older saved formats)
+        const name = (rawName || '').replace(/\s*-\s*\$\d+(?:\.\d+)?\/hr\s*$/i, '').trim();
+        const qty = parseFloat(row.querySelector('.itm-qty').value) || 1;
+        const priceRaw = row.querySelector('.itm-price').value;
+        const price = priceRaw === '' ? 0 : parseFloat(priceRaw) || 0;
+  const typeEl = row.querySelector('.itm-type');
+  const type = typeEl ? (typeEl.value || 'part') : 'part';
+        return { name, qty, price, type };
+      });
+      // Also update job items if job exists
+      if (job) job.items = JSON.parse(JSON.stringify(inv.items));
+    }
+
+    // Parse customer name for first/last
+    const nameParts = (inv.customer || '').trim().split(' ');
+    inv.customer_first = nameParts[0] || '';
+    inv.customer_last = nameParts.slice(1).join(' ') || '';
+
+    // Persist customer name to jobs and appointments
+    if (inv.appointment_id) {
+      // Update appointment
+      let appt = appointments.find(a => a.id === inv.appointment_id);
+      if (appt && inv.customer && inv.customer !== 'Walk-in') {
+        appt.customer = inv.customer;
+        appt.customer_first = inv.customer_first;
+        appt.customer_last = inv.customer_last;
+        console.log(`[Invoices] Updated appointment ${appt.id} with customer: ${inv.customer}`);
+      }
+      // Update job
+      let job = jobs.find(j => j.appointment_id === inv.appointment_id);
+      if (job && inv.customer && inv.customer !== 'Walk-in') {
+        job.customer = inv.customer;
+        job.customer_first = inv.customer_first;
+        job.customer_last = inv.customer_last;
+        console.log(`[Invoices] Updated job ${job.id} with customer: ${inv.customer}`);
+      }
+    }
+
+    // Save to Supabase/localStorage
+    if (supabase) {
+      // Get current data
+      const { data: currentData, error: fetchError } = await supabase
+        .from('data')
+        .select('*')
+        .eq('shop_id', shopId)
+        .single();
+      
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        console.error('[Invoices] Supabase fetch error:', fetchError);
+        throw fetchError;
+      }
+      
+      // Upsert with invoices, appointments, jobs to data table
+      const payload = {
+        shop_id: shopId,
+        invoices: invoices,
+        appointments: appointments,
+        jobs: jobs,
+        settings: currentData?.settings || {},
+        threads: currentData?.threads || [],
+        updated_at: new Date().toISOString()
+      };
+      
+      const { error } = await supabase.from('data').upsert(payload, { onConflict: 'shop_id' });
+      if (error) {
+        console.error('[Invoices] Error saving invoice to data table:', error);
+        alert('Error saving invoice: ' + error.message);
+        return;
+      } else {
+        console.log('[Invoices] ✅ Saved invoices to data table');
+      }
+      
+      // FIX: Removed the check that was skipping invoices with underscores
+      // Also upsert to invoices table
+      for (const inv of invoices) {
+        const invoicePayload = {
+          id: inv.id,
+          shop_id: shopId,
+          number: inv.number,
+          customer: inv.customer || '',
+          customer_first: inv.customer_first || '',
+          customer_last: inv.customer_last || '',
+          appointment_id: inv.appointment_id || null,
+          job_id: inv.job_id || null,
+          status: inv.status || 'open',
+          due: inv.due || null,
+          tax_rate: inv.tax_rate || 6,
+          discount: inv.discount || 0,
+          items: inv.items || [],
+          paid_date: inv.paid_date || null,
+          created_at: inv.created_at || new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+        
+        const { error: upsertError } = await supabase
+          .from('invoices')
+          .upsert(invoicePayload, { onConflict: 'id' });
+        
+        if (upsertError) {
+          console.error('[Invoices] Error upserting invoice to invoices table:', upsertError);
+        } else {
+          console.log(`[Invoices] ✅ Upserted invoice ${inv.id} to invoices table (status: ${inv.status})`);
+        }
+      }
+    } else {
+      const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+      data.invoices = invoices;
+      data.appointments = appointments;
+      data.jobs = jobs;
+      localStorage.setItem('xm_data', JSON.stringify(data));
+      console.log('[Invoices] Saved invoices, appointments, jobs to localStorage');
+    }
+    document.getElementById('invModal').classList.add('hidden');
+    renderInvoices();
+    renderPrevInvoices();
+    showNotification('Invoice saved successfully!');
+  }
+
+  // Mark invoice paid - FIXED to update Supabase
+  async function markInvoicePaid(inv) {
+    inv.status = 'paid';
+    inv.paid_date = new Date().toISOString();
+    inv.updated_at = new Date().toISOString();
+    
+    // Parse customer name
+    const nameParts = (inv.customer || '').trim().split(' ');
+    inv.customer_first = nameParts[0] || '';
+    inv.customer_last = nameParts.slice(1).join(' ') || '';
+    
+    // Save to both data table and invoices table
+    if (supabase) {
+      // Save to data table
+      const { data: currentData, error: fetchError } = await supabase
+        .from('data')
+        .select('*')
+        .eq('shop_id', shopId)
+        .single();
+      
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        console.error('[Invoices] Error fetching data:', fetchError);
+        return;
+      }
+      
+      const payload = {
+        shop_id: shopId,
+        invoices: invoices,
+        appointments: appointments,
+        jobs: jobs,
+        settings: currentData?.settings || {},
+        threads: currentData?.threads || [],
+        updated_at: new Date().toISOString()
+      };
+      
+      await supabase.from('data').upsert(payload, { onConflict: 'shop_id' });
+      console.log('[Invoices] ✅ Saved to data table');
+      
+      // Save to invoices table
+      const invoicePayload = {
+        id: inv.id,
+        shop_id: shopId,
+        number: inv.number,
+        customer: inv.customer || '',
+        customer_first: inv.customer_first,
+        customer_last: inv.customer_last,
+        appointment_id: inv.appointment_id || null,
+        job_id: inv.job_id || null,
+        status: 'paid',
+        due: inv.due || null,
+        tax_rate: inv.tax_rate || 6,
+        discount: inv.discount || 0,
+        items: inv.items || [],
+        paid_date: inv.paid_date,
+        created_at: inv.created_at || new Date().toISOString(),
+        updated_at: inv.updated_at
+      };
+      
+      const { error: upsertError } = await supabase
+        .from('invoices')
+        .upsert(invoicePayload, { onConflict: 'id' });
+      
+      if (upsertError) {
+        console.error('[Invoices] Error updating invoice in invoices table:', upsertError);
+      } else {
+        console.log(`[Invoices] ✅ Invoice ${inv.id} marked as PAID in invoices table`);
+      }
+    } else {
+      const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+      data.invoices = invoices;
+      localStorage.setItem('xm_data', JSON.stringify(data));
+    }
+    
+    renderInvoices();
+    renderPrevInvoices();
+    showNotification('Invoice marked as paid!');
+  }
+
+  // Mark invoice unpaid - FIXED to update Supabase
+  async function markInvoiceUnpaid(inv) {
+    inv.status = 'open';
+    inv.paid_date = null;
+    inv.updated_at = new Date().toISOString();
+    
+    // Parse customer name
+    const nameParts = (inv.customer || '').trim().split(' ');
+    inv.customer_first = nameParts[0] || '';
+    inv.customer_last = nameParts.slice(1).join(' ') || '';
+    
+    // Save to both data table and invoices table
+    if (supabase) {
+      // Save to data table
+      const { data: currentData, error: fetchError } = await supabase
+        .from('data')
+        .select('*')
+        .eq('shop_id', shopId)
+        .single();
+      
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        console.error('[Invoices] Error fetching data:', fetchError);
+        return;
+      }
+      
+      const payload = {
+        shop_id: shopId,
+        invoices: invoices,
+        appointments: appointments,
+        jobs: jobs,
+        settings: currentData?.settings || {},
+        threads: currentData?.threads || [],
+        updated_at: new Date().toISOString()
+      };
+      
+      await supabase.from('data').upsert(payload, { onConflict: 'shop_id' });
+      console.log('[Invoices] ✅ Saved to data table');
+      
+      // Save to invoices table
+      const invoicePayload = {
+        id: inv.id,
+        shop_id: shopId,
+        number: inv.number,
+        customer: inv.customer || '',
+        customer_first: inv.customer_first,
+        customer_last: inv.customer_last,
+        appointment_id: inv.appointment_id || null,
+        job_id: inv.job_id || null,
+        status: 'open',
+        due: inv.due || null,
+        tax_rate: inv.tax_rate || 6,
+        discount: inv.discount || 0,
+        items: inv.items || [],
+        paid_date: null,
+        created_at: inv.created_at || new Date().toISOString(),
+        updated_at: inv.updated_at
+      };
+      
+      const { error: upsertError } = await supabase
+        .from('invoices')
+        .upsert(invoicePayload, { onConflict: 'id' });
+      
+      if (upsertError) {
+        console.error('[Invoices] Error updating invoice in invoices table:', upsertError);
+      } else {
+        console.log(`[Invoices] ✅ Invoice ${inv.id} marked as UNPAID in invoices table`);
+      }
+    } else {
+      const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+      data.invoices = invoices;
+      localStorage.setItem('xm_data', JSON.stringify(data));
+    }
+    
+    renderInvoices();
+    renderPrevInvoices();
+    showNotification('Invoice marked as unpaid!');
+  }
+
+  // Open remove invoice modal
+  function openRemoveInvModal(inv) {
+    currentInvoiceForRemove = inv;
+    const modal = document.getElementById('removeInvModal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+  }
+
+  // Close remove invoice modal
+  function closeRemoveInvModal() {
+    const modal = document.getElementById('removeInvModal');
+    if (modal) modal.classList.add('hidden');
+    currentInvoiceForRemove = null;
+  }
+
+  // Make it global
+  window.closeRemoveInvModal = closeRemoveInvModal;
+
+  // Handle remove invoice
+  async function handleRemoveInv(removeAppointment = false) {
+    if (!currentInvoiceForRemove) return;
+    
+    const inv = currentInvoiceForRemove;
+    
+    // Remove invoice
+    invoices = invoices.filter(i => i.id !== inv.id);
+    
+    if (removeAppointment) {
+      // Remove appointment
+      appointments = appointments.filter(a => a.id !== inv.appointment_id);
+    }
+    
+    // Save to Supabase/localStorage
+    if (supabase) {
+      // Get current data
+      const { data: currentData, error: fetchError } = await supabase
+        .from('data')
+        .select('*')
+        .eq('shop_id', shopId)
+        .single();
+      
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        throw fetchError;
+      }
+      
+      // Upsert with updated invoices, appointments, jobs
+      const payload = {
+        shop_id: shopId,
+        invoices: invoices,
+        appointments: appointments,
+        jobs: jobs,
+        settings: currentData?.settings || {},
+        threads: currentData?.threads || [],
+        updated_at: new Date().toISOString()
+      };
+      
+      const { error } = await supabase.from('data').upsert(payload, { onConflict: 'shop_id' });
+      if (error) alert('Error saving: ' + error.message);
+      
+      // Also delete from invoices table
+      const { error: deleteError } = await supabase
+        .from('invoices')
+        .delete()
+        .eq('id', inv.id);
+      
+      if (deleteError) {
+        console.error('[Invoices] Error deleting from invoices table:', deleteError);
+      } else {
+        console.log('[Invoices] ✅ Deleted invoice from invoices table');
+      }
+    } else {
+      const data = JSON.parse(localStorage.getItem('xm_data') || '{}');
+      data.invoices = invoices;
+      data.appointments = appointments;
+      data.jobs = jobs;
+      localStorage.setItem('xm_data', JSON.stringify(data));
+    }
+    
+    closeRemoveInvModal();
+    renderInvoices();
+    renderPrevInvoices();
+    showNotification('Invoice removed successfully');
+  }
+
+  // Show notification
+  function showNotification(message, type = 'success') {
+    const notification = document.getElementById('notification');
+    if (!notification) return;
+    
+    notification.textContent = message;
+    notification.className = 'notification';
+    
+    if (type === 'error') {
+      notification.style.background = '#ef4444';
+    } else {
+      notification.style.background = '#10b981';
+    }
+    
+    notification.classList.remove('hidden');
+    
+    setTimeout(() => {
+      notification.classList.add('hidden');
+    }, 3000);
+  }
+
+  // Wire up actions
+  document.getElementById('invTable').onclick = e => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const inv = invoices.find(i => i.id === btn.dataset.id);
+    if (!inv) return;
+    if (btn.dataset.action === 'edit') openInvoiceModal(inv);
+    if (btn.dataset.action === 'view') {
+      // Route to the standalone invoice view page
+      try {
+        const id = encodeURIComponent(inv.id || inv.number || '');
+        if (id) location.href = `invoice.html?id=${id}`;
+        else openInvoiceModal(inv);
+      } catch (e) {
+        console.warn('[Invoices] Failed to navigate to invoice view, opening modal as fallback', e);
+        openInvoiceModal(inv);
+      }
+    }
+    if (btn.dataset.action === 'markPaid') openConfirmPayModal(inv, 'paid');
+    if (btn.dataset.action === 'remove') openRemoveInvModal(inv);
+  };
+  document.getElementById('prevTable').onclick = e => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const inv = invoices.find(i => i.id === btn.dataset.id);
+    if (!inv) return;
+    if (btn.dataset.action === 'view') {
+      try {
+        const id = encodeURIComponent(inv.id || inv.number || '');
+        if (id) location.href = `invoice.html?id=${id}`;
+        else openInvoiceModal(inv);
+      } catch (e) {
+        console.warn('[Invoices] Failed to navigate to invoice view, opening modal as fallback', e);
+        openInvoiceModal(inv);
+      }
+    }
+    if (btn.dataset.action === 'markUnpaid') openConfirmPayModal(inv, 'unpaid');
+    if (btn.dataset.action === 'remove') openRemoveInvModal(inv);
+  };
+
+  // New invoice button
+  document.getElementById('newInvoice').onclick = () => {
+    const newInv = {
+      id: 'inv_' + Date.now(),
+      number: invoices.length + 1001,
+      customer: '',
+      appointment_id: '',
+      status: 'open',
+      due: '',
+      tax_rate: 6,
+      discount: 0,
+      items: [],
+      created_at: new Date().toISOString()
+    };
+    invoices.push(newInv);
+    openInvoiceModal(newInv);
+  };
+
+  // Initial load
+  loadData().then(() => {
+    renderInvoices();
+    renderPrevInvoices();
+    
+    // Event listeners for remove modal
+    document.getElementById('removeInvBtn').addEventListener('click', () => handleRemoveInv(false));
+    document.getElementById('removeInvApptBtn').addEventListener('click', () => handleRemoveInv(true));
+    document.getElementById('cancelRemoveInvBtn').addEventListener('click', closeRemoveInvModal);
+    // Wire confirm modal buttons
+    const confirmBtn = document.getElementById('confirmPayConfirm');
+    const cancelBtn = document.getElementById('confirmPayCancel');
+    if (confirmBtn) confirmBtn.addEventListener('click', async () => {
+      if (!currentConfirmInvoice || !currentConfirmAction) { closeConfirmPayModal(); return; }
+      try {
+        if (currentConfirmAction === 'paid') await markInvoicePaid(currentConfirmInvoice);
+        else await markInvoiceUnpaid(currentConfirmInvoice);
+      } catch (e) { console.error('Error applying confirmed action:', e); }
+      closeConfirmPayModal();
+    });
+    if (cancelBtn) cancelBtn.addEventListener('click', () => closeConfirmPayModal());
+
+    // Setup sortable headers for invoices
+    document.querySelectorAll('#invTable thead th.sortable, #prevTable thead th.sortable').forEach(th => {
+      th.style.cursor = 'pointer';
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        if (!col) return;
+        if (invoiceSortCol === col) invoiceSortDir = invoiceSortDir === 'asc' ? 'desc' : 'asc';
+        else { invoiceSortCol = col; invoiceSortDir = 'asc'; }
+        // Update visual indicators
+        document.querySelectorAll('#invTable thead th.sortable, #prevTable thead th.sortable').forEach(h => h.classList.remove('asc','desc'));
+        th.classList.add(invoiceSortDir);
+        renderInvoices(); renderPrevInvoices();
+      });
+    });
+  });
+}
+
+export { setupInvoices };
